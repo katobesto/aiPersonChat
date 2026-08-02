@@ -1,5 +1,8 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { initDB, getDB, save } from './db.js';
 import jwt from 'jsonwebtoken';
 import { authMiddleware, createToken, hashPassword, verifyPassword } from './auth.js';
@@ -948,11 +951,9 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
 }
 
 // ─── Serve frontend static files (production) + SPA fallback ────────
-import path from 'path';
-import fs from 'fs';
-const distPath = path.join(__dirname, '..', 'dist', 'index.html');
-if (fs.existsSync(distPath)) {
-  const staticDir = path.join(__dirname, '..', 'dist');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const staticDir = path.join(__dirname, '..', 'dist');
+if (fs.existsSync(path.join(staticDir, 'index.html'))) {
   app.use(express.static(staticDir));
   // SPA fallback — any non-API route serves index.html
   app.get('/', (_req, res) => { res.sendFile(path.join(staticDir, 'index.html')); });
