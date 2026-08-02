@@ -4,10 +4,31 @@ Esta guía explica cómo desplegar la aplicación AI Chat en un servidor VPS usa
 
 ## Requisitos previos
 
-- Un **VPS** con Ubuntu 20.04+ (o similar) con al menos **2 GB de RAM**
+- Un **VPS** con Ubuntu 20.04+ (o similar) con al menos **1 GB de RAM**
 - Docker y Docker Compose instalados en el VPS
 - Una cuenta de [Coolify](https://coolify.io) o Coolify instalado en tu propio servidor
 - El repositorio de GitHub: `github.com/katobesto/aiPersonChat`
+
+---
+
+## Arquitectura
+
+Un **único contenedor** que construye y sirve todo:
+
+```
+┌───────────────  Contenedor (puerto 3000) ───────────────┐
+│                                                         │
+│   Express                                                │
+│   ├── /api/*       → APIs REST + SSE streaming          │
+│   ├── /*           → Frontend estático (Vite build)     │
+│   └── SQLite DB    → data/ai-chat.db (volumen Docker)  │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+        ↑
+    https://chat.tudominio.com
+```
+
+Express sirve tanto las APIs como el frontend estático. Coolify solo gestiona un servicio — sin nginx intermedio, sin contenedores extra.
 
 ---
 
@@ -72,7 +93,9 @@ openssl rand -hex 32
 ## Paso 6: Asignar un dominio
 
 1. En la página del recurso en Coolify, ve a la sección **Domains**
-2. Añade el dominio deseado, ej: `chat.tudominio.com`
+2. Añade el dominio deseado, ej: `http://chat.tudominio.com:3000`
+   - El puerto 3000 es obligatorio — es donde escucha Express dentro del contenedor
+   - Coolify enrutará tráfico de `https://chat.tudominio.com` (puerto 443) → puerto 3000 del contenedor
 3. Configura el DNS apuntando al IP de tu VPS (registro A)
 4. Coolify generará automáticamente un certificado SSL con Let's Encrypt
 
@@ -82,20 +105,14 @@ openssl rand -hex 32
 
 Haz clic en **Deploy** y observa los logs. Los primeros despliegues tardan más porque deben construir las imágenes Docker.
 
-### Estructura de servicios
-
-| Servicio | Puerto interno | Descripción |
-|----------|---------------|-------------|
-| `frontend` | 80 | Nginx sirve la app Vite + proxy /api al backend |
-| `backend` | 3001 | Servidor Express con API y base de datos SQLite |
-
-El frontend actúa como punto de entrada: el usuario accede a `https://chat.tudominio.com` y todas las peticiones `/api/*` se enrutan automáticamente al backend.
-
 ---
 
 ## Datos persistentes
 
-La base de datos SQLite (`backend/data/ai-chat.db`) se almacena en un **volumen Docker** que persiste entre redesplesgos y actualizaciones. No perderás datos al actualizar la app.
+La base de datos SQLite (`data/ai-chat.db`) se almacena en un **volumen Docker** que persiste entre redesplesgos y actualizaciones. No perderás datos al actualizar la app.
+
+Al iniciar por primera vez, el sistema creará automáticamente:
+- Un usuario admin (usuario: `admin`, contraseña: `admin`)
 
 ---
 
@@ -109,17 +126,20 @@ Cada vez que hagas push a `main` en GitHub:
 
 ## Logs y monitorización
 
-Coolify incluye un visor de logs integrado. Desde el dashboard puedes ver los logs en tiempo real de cada servicio (`frontend` y `backend`).
+Coolify incluye un visor de logs integrado. Desde el dashboard puedes ver los logs en tiempo real del servicio `app`.
+
+El endpoint `/health` responde con JSON indicando si el servidor está operativo:
+```bash
+curl https://chat.tudominio.com/health
+# {"status":"ok","uptime":1234}
+```
 
 ---
 
 ## Troubleshooting
 
-### La app no se conecta al backend
-Verifica que el contenedor frontend puede alcanzar el backend:
-```bash
-docker exec -it <frontend-container> wget -qO- http://backend:3001/health
-```
+### La app no se conecta al backend / CORS error
+Verifica que has asignado el dominio con puerto 3000: `http://chat.tudominio.com:3000`
 
 ### Error de JWT_SECRET
 Asegúrate de haber configurado la variable `JWT_SECRET` en Coolify antes de desplegar. Es obligatoria (marcada con `:?`).
@@ -132,12 +152,15 @@ Coolify configura automáticamente Let's Encrypt. Asegúrate de que el DNS apunt
 ## Comandos útiles
 
 ```bash
-# Ver logs del backend en tiempo real desde Coolify UI o:
-docker compose -f docker-compose.yml logs -f backend
+# Ver logs del contenedor en tiempo real desde Coolify UI o:
+docker compose -f docker-compose.yml logs -f app
 
-# Acceder al shell del backend para debug:
-docker exec -it <backend-container> sh
+# Acceder al shell del contenedor para debug:
+docker exec -it <container-id> sh
 
-# Reiniciar un servicio específico:
-docker compose restart backend
+# Reiniciar el servicio:
+docker compose restart app
+
+# Construir y desplegar manualmente (desde el repositorio):
+docker compose up --build -d
 ```

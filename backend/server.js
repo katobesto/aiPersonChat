@@ -947,6 +947,17 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
   });
 }
 
+// ─── Serve frontend static files (production) + SPA fallback ────────
+import path from 'path';
+import fs from 'fs';
+const distPath = path.join(__dirname, '..', 'dist', 'index.html');
+if (fs.existsSync(distPath)) {
+  const staticDir = path.join(__dirname, '..', 'dist');
+  app.use(express.static(staticDir));
+  // SPA fallback — any non-API route serves index.html
+  app.get('/', (_req, res) => { res.sendFile(path.join(staticDir, 'index.html')); });
+}
+
 // ─── Health check endpoint (for Docker/Coolify) ──────────────────────
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });

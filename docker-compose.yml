@@ -1,35 +1,27 @@
 # AI Chat App — Docker Compose for Coolify deployment
 #
+# Single-container architecture: Express serves both API + static frontend.
+#
 # How to deploy on Coolify:
 #   1. Add a new resource → Application → Docker Compose Build Pack
 #   2. Connect your GitHub repository (this repo)
 #   3. Coolify will auto-detect docker-compose.yml at the root
-#   4. Assign a domain and set environment variables in Coolify UI
+#   4. Assign a domain and set JWT_SECRET in Coolify UI
 #   5. Deploy!
 
 services:
-  # ── Backend API server ───────────────────────────────────────
-  backend:
+  app:
     build:
-      context: ./backend
-      dockerfile: ../Dockerfile.backend
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      - PORT=3001
-      # JWT secret — Coolify will prompt for this (required variable)
+      - PORT=3000
+      # JWT secret — required for authentication tokens
       - JWT_SECRET=${JWT_SECRET:?Set a JWT_SECRET in Coolify UI}
     volumes:
       # Persist SQLite database across container rebuilds
       - type: bind
         source: ./data
-        target: /app/data
+        target: /app/backend/data
         is_directory: true
-
-  # ── Frontend (Vite build served by Nginx) ────────────────────
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: ../Dockerfile.frontend
-    restart: unless-stopped
-    depends_on:
-      - backend
