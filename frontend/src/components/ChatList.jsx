@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { deleteChat, renameChat } from '../api';
 
-export default function ChatList({ chats, activeChatId, onSelect, onNew, onDelete, onOpenSettings, onLogout }) {
+export default function ChatList({ chats, activeChatId, onSelect, onNew, onDelete, onOpenSettings, onLogout, isOpen = true }) {
   const [contextMenu, setContextMenu] = useState(null); // { x, y, chat }
   const [editingChat, setEditingChat] = useState(null); // chat being renamed
   const [editTitle, setEditTitle] = useState('');
@@ -42,7 +42,7 @@ export default function ChatList({ chats, activeChatId, onSelect, onNew, onDelet
   };
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${isOpen ? ' sidebar-open' : ''}`}>
       <div className="sidebar-header">
         <h2>AI Chat</h2>
       </div>

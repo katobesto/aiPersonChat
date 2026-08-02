@@ -12,6 +12,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsDirty, setSettingsDirty] = useState(0);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Check token on mount
   useEffect(() => {
@@ -56,6 +57,8 @@ export default function App() {
     const result = await createChat('New Chat');
     setActiveChatId(Number(result.id));
     refreshChats();
+    // Close sidebar on mobile after creating a new chat
+    if (window.innerWidth <= 768) setSidebarOpen(false);
   };
 
   const handleLogin = () => {
@@ -69,6 +72,15 @@ export default function App() {
     setActiveChatId(null);
   };
 
+  // Close sidebar when a chat is selected on mobile
+  const handleSelectChat = (id) => {
+    setActiveChatId(id);
+    if (window.innerWidth <= 768) setSidebarOpen(false);
+  };
+
+  const toggleSidebar = () => setSidebarOpen((o) => !o);
+  const closeSidebar = () => setSidebarOpen(false);
+
   // Not logged in → show login screen
   if (!isLoggedIn) {
     return <LoginScreen onLogin={handleLogin} />;
@@ -76,14 +88,19 @@ export default function App() {
 
   return (
     <div className="app-layout">
+      {/* Overlay that closes sidebar when tapped */}
+      {sidebarOpen && (
+        <div className="sidebar-overlay" onClick={closeSidebar}></div>
+      )}
       <ChatList
         chats={chats}
         activeChatId={activeChatId}
-        onSelect={setActiveChatId}
+        onSelect={handleSelectChat}
         onNew={handleNewChat}
         onDelete={refreshChats}
         onOpenSettings={() => setShowSettings(true)}
         onLogout={handleLogout}
+        isOpen={sidebarOpen}
       />
       <div className="chat-main">
         {activeChatId ? (
@@ -92,9 +109,11 @@ export default function App() {
             title={chats.find(c => c.id === activeChatId)?.title || 'New Chat'}
             onRefresh={refreshChats}
             settingsDirty={settingsDirty}
+            toggleSidebar={toggleSidebar}
+            sidebarOpen={sidebarOpen}
           />
         ) : (
-          <WelcomeScreen />
+          <WelcomeScreen toggleSidebar={toggleSidebar} />
         )}
       </div>
       {showSettings && (
@@ -104,9 +123,12 @@ export default function App() {
   );
 }
 
-function WelcomeScreen() {
+function WelcomeScreen({ toggleSidebar }) {
   return (
     <div className="welcome-screen">
+      <button className="hamburger-btn" onClick={toggleSidebar}>
+        <i className="fas fa-bars"></i>
+      </button>
       <div className="welcome-icon"><i className="fas fa-bolt"></i></div>
       <h2>Bienvenido a AI Chat</h2>
       <p>Selecciona una conversación o crea una nueva para empezar.</p>

@@ -725,8 +725,117 @@ body {
 .btn-login:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 24px var(--accent-glow); }
 .btn-login:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-/* ─── Responsive tweaks ──────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   HAMBURGER BUTTON
+   ══════════════════════════════════════════════════════════════ */
+.hamburger-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  display: none; /* hidden on desktop */
+}
+
+.hamburger-btn:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SIDEBAR OVERLAY (mobile only)
+   ══════════════════════════════════════════════════════════════ */
+.sidebar-overlay {
+  display: none;
+}
+
+/* ─── Chat header adjustments ────────────────────────────── */
+.chat-header span,
+.chat-header input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RESPONSIVE — Mobile (≤768px)
+   ═══════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-  .sidebar { width: 260px; min-width: 260px; }
-  .message-bubble { max-width: 90%; }
+
+  /* Show hamburger button on mobile */
+  .hamburger-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Sidebar becomes a slide-out drawer */
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 998;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 280px;
+    min-width: 280px;
+    height: 100vh;
+    z-index: 999;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+  }
+
+  .sidebar.sidebar-open {
+    transform: translateX(0);
+  }
+
+  /* Chat main takes full width */
+  .chat-main {
+    width: 100%;
+  }
+
+  /* Messages wider on mobile */
+  .message-bubble {
+    max-width: 92%;
+    padding: 12px 14px;
+    font-size: 13.5px;
+  }
+
+  .messages-area {
+    padding: 16px 12px;
+  }
+
+  /* Input area */
+  .input-area {
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .input-area textarea {
+    min-height: 44px;
+    padding: 10px 14px;
+    font-size: 13.5px;
+  }
+
+  .btn-send {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+  }
+
+  /* Welcome screen */
+  .welcome-screen {
+    padding: 20px;
+  }
+
+  .chat-header {
+    padding: 8px 12px !important;
+  }
 }

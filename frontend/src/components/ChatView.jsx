@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { fetchMessages, sendMessageStream, rewindMessages, renameChat, fetchSettings as apiFetchSettings, speakWithEdgeTts, fetchChatAssignments } from '../api';
 import AssignmentsPanel from './AssignmentsPanel';
 
-export default function ChatView({ chatId, title: initialTitle, onRefresh, settingsDirty }) {
+export default function ChatView({ chatId, title: initialTitle, onRefresh, settingsDirty, toggleSidebar }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -184,6 +184,14 @@ export default function ChatView({ chatId, title: initialTitle, onRefresh, setti
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       {/* Header with editable title */}
       <div className="chat-header" style={{ flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <button
+          className="hamburger-btn"
+          onClick={toggleSidebar}
+          aria-label="Menú"
+          title="Mostrar/ocultar menú"
+        >
+          <i className="fas fa-bars"></i>
+        </button>
         {editingTitle ? (
           <input
             value={editTitle}
