@@ -25,10 +25,10 @@ Un **único contenedor** que construye y sirve todo:
 │                                                         │
 └─────────────────────────────────────────────────────────┘
         ↑
-    https://chat.tudominio.com
+    https://aiperson.javierbenzo.com
 ```
 
-Express sirve tanto las APIs como el frontend estático. Coolify solo gestiona un servicio — sin nginx intermedio, sin contenedores extra.
+Express sirve tanto las APIs como el frontend estático. Coolify gestiona un solo contenedor — sin nginx intermedio, sin docker-compose, sin complicaciones.
 
 ---
 
@@ -70,14 +70,20 @@ La instalación instalará Docker, Docker Compose y configurará toda la infraes
 1. Ve a **Projects** → crea o selecciona un proyecto
 2. Haz clic en **Add Resource** → **Application**
 3. Selecciona tu repositorio GitHub y la rama `main`
-4. En **Build Pack**, Coolify detectará automáticamente el archivo `docker-compose.yml`. Si no, selecciona manualmente **Docker Compose Build Pack**.
+4. En **Build Pack**, selecciona manualmente **Dockerfile** (Coolify lo detectará automáticamente al ver el archivo `Dockerfile` en la raíz)
 5. Haz clic en **Deploy**
 
 ---
 
-## Paso 5: Configurar variables de entorno y puerto
+## Paso 5: Configurar Container Port, variables y dominio
 
-Coolify leerá el docker-compose y te pedirá las variables que faltan:
+En la página del recurso de Coolify:
+
+### A) General → Container Port → `3000`
+
+Esto es **crítico**. Le dice al proxy interno (Traefik) que enrute el tráfico HTTP al puerto 3000 donde escucha Express dentro del contenedor. Sin esto, no podrás acceder a la app.
+
+### B) Variables de entorno
 
 | Variable | Descripción | Ejemplo |
 |----------|-------------|---------|
@@ -88,30 +94,23 @@ Puedes generar uno con:
 openssl rand -hex 32
 ```
 
-### Configurar el Container Port en Coolify
+### C) Dominio → `https://aiperson.javierbenzo.com`
 
-Es importante que Coolify sepa en qué puerto escucha la app dentro del contenedor:
-
-1. Ve a la página de tu recurso en Coolify → **General**
-2. Busca la opción **Container Port** y establece `3000`
-3. Esto le dice al proxy interno (Traefik) que enrute el tráfico HTTP al puerto 3000 del contenedor
-
----
-
-## Paso 6: Asignar un dominio
-
-1. En la página del recurso en Coolify, ve a la sección **Domains**
-2. Añade el dominio deseado, ej: `http://chat.tudominio.com:3000`
-   - El puerto 3000 es obligatorio — es donde escucha Express dentro del contenedor
-   - Coolify enrutará tráfico de `https://chat.tudominio.com` (puerto 443) → puerto 3000 del contenedor
-3. Configura el DNS apuntando al IP de tu VPS (registro A)
-4. Coolify generará automáticamente un certificado SSL con Let's Encrypt
+- El dominio debe ser SOLO el FQDN, **sin puerto**: `https://aiperson.javierbenzo.com`
+- Coolify enrutará automáticamente del puerto 443 al Container Port (3000) que configuraste arriba
+- Configura el DNS de Cloudflare apuntando al IP de tu VPS (registro A)
+- Coolify generará automáticamente un certificado SSL con Let's Encrypt
 
 ---
 
-## Paso 7: Desplegar
+## Paso 6: Desplegar
 
 Haz clic en **Deploy** y observa los logs. Los primeros despliegues tardan más porque deben construir las imágenes Docker.
+
+Cuando termine, deberías ver algo como:
+```
+🚀 AI Chat Backend running on http://localhost:3000
+```
 
 ---
 
@@ -138,7 +137,7 @@ Coolify incluye un visor de logs integrado. Desde el dashboard puedes ver los lo
 
 El endpoint `/health` responde con JSON indicando si el servidor está operativo:
 ```bash
-curl https://chat.tudominio.com/health
+curl https://aiperson.javierbenzo.com/health
 # {"status":"ok","uptime":1234}
 ```
 
@@ -147,14 +146,12 @@ curl https://chat.tudominio.com/health
 ## Troubleshooting
 
 ### La página no carga / pantalla en blanco / error 502
-- **Container Port**: Asegúrate de que Coolify tiene configurado el puerto `3000` en General → Container Port. Sin esto, Traefik no sabrá dónde enrutar el tráfico.
+- **Container Port**: Es el paso más importante. Asegúrate de que está configurado como `3000` en General → Container Port. Sin esto, Traefik no sabrá dónde enrutar el tráfico y la app no será accesible desde fuera.
+- **Dominio sin puerto**: El dominio debe ser solo `https://aiperson.javierbenzo.com`, NO `http://aiperson.javierbenzo.com:3000`
 - **Logs del contenedor**: Revisa los logs en Coolify para ver si hay errores al arrancar (ej: archivos faltantes, variables sin configurar)
 
-### La app no se conecta al backend / CORS error
-Verifica que has asignado el dominio con puerto 3000: `http://chat.tudominio.com:3000`
-
 ### Error de JWT_SECRET
-Asegúrate de haber configurado la variable `JWT_SECRET` en Coolify antes de desplegar. Es obligatoria (marcada con `:?`).
+Asegúrate de haber configurado la variable `JWT_SECRET` antes de desplegar. Es obligatoria.
 
 ### SSL no funciona
 Coolify configura automáticamente Let's Encrypt. Asegúrate de que el DNS apunta correctamente a tu servidor antes de activar SSL.
@@ -164,15 +161,12 @@ Coolify configura automáticamente Let's Encrypt. Asegúrate de que el DNS apunt
 ## Comandos útiles
 
 ```bash
-# Ver logs del contenedor en tiempo real desde Coolify UI o:
-docker compose -f docker-compose.yml logs -f app
-
 # Acceder al shell del contenedor para debug:
 docker exec -it <container-id> sh
 
-# Reiniciar el servicio:
-docker compose restart app
+# Reiniciar el servicio desde Coolify UI o manualmente:
+docker restart <container-id>
 
-# Construir y desplegar manualmente (desde el repositorio):
-docker compose up --build -d
+# Ver logs del contenedor:
+docker logs -f <container-id>
 ```

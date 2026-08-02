@@ -967,8 +967,9 @@ app.get('/health', (_req, res) => {
 // ─── Start server ──────────────────────────────────────────────────────
 
 initDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`🚀 AI Chat Backend running on http://localhost:${PORT}`);
+  const host = '0.0.0.0';
+  app.listen(PORT, host, () => {
+    console.log(`🚀 AI Chat Backend running on http://${host}:${PORT}`);
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);

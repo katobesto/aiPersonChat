@@ -21,6 +21,5 @@ Thumbs.db
 *.log
 npm-debug.log*
 
-# Docker — exclude local DB from git (production uses named volume)
-backend/data/*.db
-backend/data/*.db-journal
+# Local SQLite database (not committed, created at runtime)
+backend/data/

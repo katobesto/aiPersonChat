@@ -27,6 +27,8 @@ COPY --from=frontend-builder /app/frontend/dist ./dist
 # Ensure data directory exists for sqlite persistence
 RUN mkdir -p /app/backend/data
 
+# Coolify expects the container on port 3000
+ENV PORT=3000
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
