@@ -12,7 +12,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install backend dependencies (no --omit=dev to get sql.js WASM binaries)
+# Install backend dependencies
 COPY backend/package*.json ./backend/
 RUN cd backend && npm install
 
@@ -31,7 +31,7 @@ RUN mkdir -p /app/backend/data
 ENV PORT=3000
 EXPOSE 3000
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=10 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=10 \
+  CMD node -e "fetch('http://localhost:3000/health').then(r=>{if(r.ok)process.exit(0);else process.exit(1)}).catch(()=>process.exit(1))"
 
 CMD ["node", "backend/server.js"]

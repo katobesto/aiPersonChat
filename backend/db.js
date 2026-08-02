@@ -16,15 +16,21 @@ if (!fs.existsSync(dataDir)) {
 let dbInstance = null;
 
 export async function initDB() {
+  console.log('[db] Loading sql.js WASM...');
   const SQL = await initSqlJs({ locateFile: (f) => path.join(__dirname, 'node_modules', 'sql.js', 'dist', f) });
+  console.log('[db] sql.js loaded successfully');
 
   // Load existing database or create new one
   let buffer;
   if (fs.existsSync(DB_PATH)) {
+    console.log(`[db] Loading existing DB from ${DB_PATH}`);
     buffer = fs.readFileSync(DB_PATH);
+  } else {
+    console.log('[db] No existing DB found, creating new one');
   }
 
   dbInstance = new SQL.Database(buffer || undefined);
+  console.log('[db] Database instance created');
 
   // Create tables
   dbInstance.run(`

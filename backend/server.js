@@ -966,12 +966,17 @@ if (fs.existsSync(path.join(staticDir, 'index.html'))) {
 
 // ─── Start server ──────────────────────────────────────────────────────
 
+console.log('[server] Starting AI Chat Backend...');
+console.log(`[server] PORT=${PORT}, NODE_ENV=${process.env.NODE_ENV || '(not set)'}`);
+
 initDB().then(() => {
+  console.log('[server] Database initialized successfully');
   const host = '0.0.0.0';
   app.listen(PORT, host, () => {
-    console.log(`🚀 AI Chat Backend running on http://${host}:${PORT}`);
+    console.log(`[server] AI Chat Backend running on http://${host}:${PORT}`);
   });
 }).catch((err) => {
-  console.error('Failed to initialize database:', err);
+  console.error('[server] FATAL: Failed to initialize database:', err.message || err);
+  if (err.stack) console.error(err.stack);
   process.exit(1);
 });
