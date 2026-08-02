@@ -75,7 +75,7 @@ La instalación instalará Docker, Docker Compose y configurará toda la infraes
 
 ---
 
-## Paso 5: Configurar variables de entorno
+## Paso 5: Configurar variables de entorno y puerto
 
 Coolify leerá el docker-compose y te pedirá las variables que faltan:
 
@@ -87,6 +87,14 @@ Puedes generar uno con:
 ```bash
 openssl rand -hex 32
 ```
+
+### Configurar el Container Port en Coolify
+
+Es importante que Coolify sepa en qué puerto escucha la app dentro del contenedor:
+
+1. Ve a la página de tu recurso en Coolify → **General**
+2. Busca la opción **Container Port** y establece `3000`
+3. Esto le dice al proxy interno (Traefik) que enrute el tráfico HTTP al puerto 3000 del contenedor
 
 ---
 
@@ -137,6 +145,10 @@ curl https://chat.tudominio.com/health
 ---
 
 ## Troubleshooting
+
+### La página no carga / pantalla en blanco / error 502
+- **Container Port**: Asegúrate de que Coolify tiene configurado el puerto `3000` en General → Container Port. Sin esto, Traefik no sabrá dónde enrutar el tráfico.
+- **Logs del contenedor**: Revisa los logs en Coolify para ver si hay errores al arrancar (ej: archivos faltantes, variables sin configurar)
 
 ### La app no se conecta al backend / CORS error
 Verifica que has asignado el dominio con puerto 3000: `http://chat.tudominio.com:3000`

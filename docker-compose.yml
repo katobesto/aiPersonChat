@@ -16,9 +16,12 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
+      # Server listens on port 3000 inside the container
       - PORT=3000
       # JWT secret — required for authentication tokens
       - JWT_SECRET=${JWT_SECRET:?Set a JWT_SECRET in Coolify UI}
+      # Tell Coolify this service responds on port 3000 (proxy routing)
+      - SERVICE_FQDN_APP_3000
     volumes:
       # Persist SQLite database across container rebuilds
       - type: bind

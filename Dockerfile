@@ -16,10 +16,12 @@ WORKDIR /app
 COPY backend/package*.json ./backend/
 RUN cd backend && npm ci --omit=dev
 
-# Copy backend source and built frontend
+# Copy ALL backend source files (server, db, auth)
 COPY backend/server.js ./backend/
 COPY backend/db.js ./backend/
 COPY backend/auth.js ./backend/
+
+# Copy built frontend (static files served by Express)
 COPY --from=frontend-builder /app/frontend/dist ./dist
 
 # Ensure data directory exists for sqlite persistence
