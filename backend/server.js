@@ -936,8 +936,10 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
             const parsed = JSON.parse(jsonStr);
             const delta = parsed.choices?.[0]?.delta || {};
 
-            // Qwen / OpenRouter style: reasoning_content in delta (separate from content)
-            if (delta.reasoning_content !== undefined) {
+            // Process reasoning/thinking and content independently so both can exist in same chunk
+
+            // Qwen / DeepSeek / OpenRouter style: reasoning_content in delta
+            if (delta.reasoning_content && typeof delta.reasoning_content === 'string') {
               onToken({ type: 'thinking', content: delta.reasoning_content });
             }
             // Anthropic/Claude style: thinking_blocks as separate field
@@ -950,8 +952,9 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
             else if (parsed.choices?.[0]?.thinking_delta?.content) {
               onToken({ type: 'thinking', content: parsed.choices[0].thinking_delta.content });
             }
-            // Standard content token
-            else if (delta.content) {
+
+            // Standard content token — process independently of reasoning
+            if (delta.content && typeof delta.content === 'string') {
               onToken({ type: 'content', content: delta.content });
             }
           } catch {
