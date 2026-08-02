@@ -12,9 +12,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install backend dependencies
+# Install backend dependencies (no --omit=dev to get sql.js WASM binaries)
 COPY backend/package*.json ./backend/
-RUN cd backend && npm ci --omit=dev
+RUN cd backend && npm install
 
 # Copy ALL backend source files (server, db, auth)
 COPY backend/server.js ./backend/
@@ -31,7 +31,7 @@ RUN mkdir -p /app/backend/data
 ENV PORT=3000
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=10 \
   CMD wget -qO- http://localhost:3000/health || exit 1
 
 CMD ["node", "backend/server.js"]
