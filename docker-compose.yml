@@ -15,6 +15,9 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    labels:
+      # Tell Traefik (Coolify proxy) to route traffic on port 3000
+      - traefik.http.services.app.loadbalancer.server.port=3000
     environment:
       # Server listens on port 3000 inside the container
       - PORT=3000
