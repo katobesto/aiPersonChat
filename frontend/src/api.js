@@ -1,12 +1,29 @@
 const BASE = '/api';
 
+/** Get the stored auth token */
+export function getToken() {
+  return localStorage.getItem('authToken');
+}
+
+/** Save or clear the auth token */
+export function setToken(token) { localStorage.setItem('authToken', token); }
+export function clearToken() { localStorage.removeItem('authToken'); }
+
+/** Shared fetch that injects Bearer token automatically */
+function authFetch(url, options = {}) {
+  const headers = { ...options.headers };
+  const token = getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(url, { ...options, headers });
+}
+
 export async function fetchSettings() {
-  const res = await fetch(`${BASE}/settings`);
+  const res = await authFetch(`${BASE}/settings`);
   return res.json();
 }
 
 export async function saveSettings(settings) {
-  const res = await fetch(`${BASE}/settings`, {
+  const res = await authFetch(`${BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
@@ -15,12 +32,12 @@ export async function saveSettings(settings) {
 }
 
 export async function fetchChats() {
-  const res = await fetch(`${BASE}/chats`);
+  const res = await authFetch(`${BASE}/chats`);
   return res.json();
 }
 
 export async function createChat(title) {
-  const res = await fetch(`${BASE}/chats`, {
+  const res = await authFetch(`${BASE}/chats`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
@@ -29,12 +46,12 @@ export async function createChat(title) {
 }
 
 export async function deleteChat(id) {
-  const res = await fetch(`${BASE}/chats/${id}`, { method: 'DELETE' });
+  const res = await authFetch(`${BASE}/chats/${id}`, { method: 'DELETE' });
   return res.json();
 }
 
 export async function renameChat(id, title) {
-  const res = await fetch(`${BASE}/chats/${id}`, {
+  const res = await authFetch(`${BASE}/chats/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
@@ -43,37 +60,32 @@ export async function renameChat(id, title) {
 }
 
 export async function fetchMessages(chatId) {
-  const res = await fetch(`${BASE}/chats/${chatId}/messages`);
+  const res = await authFetch(`${BASE}/chats/${chatId}/messages`);
   return res.json();
 }
 
 /**
  * Rewind — delete all messages after the given message ID in a chat.
- * @param {number} chatId
- * @param {number} msgId - Keep this message, delete everything after it.
  */
 export async function rewindMessages(chatId, msgId) {
-  const res = await fetch(`${BASE}/chats/${chatId}/messages/after/${msgId}`, { method: 'DELETE' });
+  const res = await authFetch(`${BASE}/chats/${chatId}/messages/after/${msgId}`, { method: 'DELETE' });
   return res.json();
 }
 
 /**
  * Send a message and stream the AI response back via SSE.
- * @param {number} chatId
- * @param {string} content
- * @param {(token: string) => void} onToken — called for each text chunk
- * @param {() => void} onDone   — called when the stream finishes successfully
- * @param {(error: string) => void} onError — called on error
  */
 export function sendMessageStream(chatId, content, onToken, onDone, onError) {
   const url = `${BASE}/chats/${chatId}/messages`;
+  const token = getToken();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ content }),
   }).then(async (res) => {
-    // If the response is NOT an SSE stream, handle as regular JSON error
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('text/event-stream')) {
       const data = await res.json().catch(() => ({}));
@@ -91,7 +103,6 @@ export function sendMessageStream(chatId, content, onToken, onDone, onError) {
 
       buffer += decoder.decode(value, { stream: true });
 
-      // Process complete SSE lines
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
@@ -108,9 +119,7 @@ export function sendMessageStream(chatId, content, onToken, onDone, onError) {
           } else if (data.delta !== undefined) {
             onToken({ delta: data.delta, type: data.type || 'content' });
           }
-        } catch {
-          // Skip malformed lines
-        }
+        } catch { /* skip malformed */ }
       }
     }
   }).catch((err) => {
@@ -119,29 +128,18 @@ export function sendMessageStream(chatId, content, onToken, onDone, onError) {
   });
 }
 
-/**
- * Fetch available models from the configured provider.
- */
 export async function fetchModels() {
-  const res = await fetch(`${BASE}/models`);
-  return res.json(); // { models: [{ id, name, ... }], error?: string }
-}
-
-/**
- * Get list of available Edge TTS voices from the backend.
- */
-export async function fetchTtsVoices() {
-  const res = await fetch(`${BASE}/tts/voices`);
+  const res = await authFetch(`${BASE}/models`);
   return res.json();
 }
 
-/**
- * Synthesize speech using Microsoft Edge TTS and play it in the browser.
- * @param {string} text - Text to speak
- * @param {string} voice - Voice name (e.g. 'es-ES-AlvaroNeural')
- */
+export async function fetchTtsVoices() {
+  const res = await authFetch(`${BASE}/tts/voices`);
+  return res.json();
+}
+
 export function speakWithEdgeTts(text, voice) {
-  return fetch(`${BASE}/tts`, {
+  return authFetch(`${BASE}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice }),
@@ -155,7 +153,151 @@ export function speakWithEdgeTts(text, voice) {
       audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(); };
       audio.play().catch(() => resolve());
     });
-  }).catch((err) => {
-    console.error('TTS error:', err);
+  }).catch((err) => { console.error('TTS error:', err); });
+}
+
+// ─── Auth API (no token needed for login) ──────────────────────
+export async function loginUser(username, password) {
+  const res = await fetch(`${BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
   });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Login failed');
+  setToken(data.token);
+  return data; // { token, role, username }
+}
+
+export function logoutUser() { clearToken(); }
+
+/** Get current user info (requires token). Returns null if not authenticated. */
+export async function getCurrentUser() {
+  try {
+    const res = await authFetch(`${BASE}/auth/me`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+// ─── Characters API ──────────────────────────────────────────────
+export async function fetchCharacters() {
+  const res = await authFetch(`${BASE}/characters`);
+  return res.json();
+}
+export async function createCharacter(name, prompt) {
+  const res = await authFetch(`${BASE}/characters`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, prompt }),
+  });
+  return res.json();
+}
+export async function updateCharacter(id, name, prompt) {
+  const res = await authFetch(`${BASE}/characters/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, prompt }),
+  });
+  return res.json();
+}
+export async function deleteCharacter(id) {
+  const res = await authFetch(`${BASE}/characters/${id}`, { method: 'DELETE' });
+  return res.json();
+}
+
+// ─── Stories API ──────────────────────────────────────────────
+export async function fetchStories() {
+  const res = await authFetch(`${BASE}/stories`);
+  return res.json();
+}
+export async function createStory(name, prompt) {
+  const res = await authFetch(`${BASE}/stories`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, prompt }),
+  });
+  return res.json();
+}
+export async function updateStory(id, name, prompt) {
+  const res = await authFetch(`${BASE}/stories/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, prompt }),
+  });
+  return res.json();
+}
+export async function deleteStory(id) {
+  const res = await authFetch(`${BASE}/stories/${id}`, { method: 'DELETE' });
+  return res.json();
+}
+
+// ─── Chat Assignments API ──────────────────────────────────────
+export async function fetchChatAssignments(chatId) {
+  const res = await authFetch(`${BASE}/chats/${chatId}/assignments`);
+  return res.json(); // { characters: [...], stories: [...] }
+}
+export async function addChatAssignment(chatId, assign_type, entity_id) {
+  const res = await authFetch(`${BASE}/chats/${chatId}/assignments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assign_type, entity_id }),
+  });
+  return res.json();
+}
+export async function removeChatAssignment(chatId, assign_type, entity_id) {
+  const res = await authFetch(`${BASE}/chats/${chatId}/assignments`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assign_type, entity_id }),
+  });
+  return res.json();
+}
+
+// ─── Users API (admin only) ──────────────────────────────────────
+export async function fetchUsers() {
+  const res = await authFetch(`${BASE}/users`);
+  return res.json();
+}
+export async function registerUser(username, password, role) {
+  const res = await authFetch(`${BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, role: role || 'user' }),
+  });
+  return res.json();
+}
+export async function updateUser(id, fields) {
+  const res = await authFetch(`${BASE}/users/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+  return res.json();
+}
+export async function deleteUser(id) {
+  const res = await authFetch(`${BASE}/users/${id}`, { method: 'DELETE' });
+  return res.json();
+}
+
+// ─── User Assignments API (admin only) ──────────────────────────
+export async function fetchUserAssignments(userId) {
+  const res = await authFetch(`${BASE}/users/${userId}/assignments`);
+  return res.json(); // { chats: [...], characters: [...], stories: [...] }
+}
+export async function addUserAssignment(userId, assign_type, entity_id) {
+  const res = await authFetch(`${BASE}/users/${userId}/assignments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assign_type, entity_id }),
+  });
+  return res.json();
+}
+export async function removeUserAssignment(userId, assign_type, entity_id) {
+  const res = await authFetch(`${BASE}/users/${userId}/assignments`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assign_type, entity_id }),
+  });
+  return res.json();
 }

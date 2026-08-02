@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import { initDB, getDB, save } from './db.js';
+import jwt from 'jsonwebtoken';
+import { authMiddleware, createToken, hashPassword, verifyPassword } from './auth.js';
 import http from 'http';
 import https from 'https';
 import { EdgeTTS } from 'edge-tts-universal';
@@ -30,6 +32,25 @@ function execQuery(sql) {
   }
 }
 
+// Parameterized query helper (execQuery doesn't support params)
+function query(sql, params = []) {
+  const db = getDB();
+  if (!db) return [];
+  try {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return rows;
+  } catch (e) {
+    console.error('Query error:', e.message, sql, params);
+    return [];
+  }
+}
+
 function runSQL(sql, params = []) {
   const db = getDB();
   if (!db) return { lastInsertRowid: 0, changes: 0 };
@@ -50,6 +71,227 @@ function runSQL(sql, params = []) {
 
   save();
   return { lastInsertRowid, changes };
+}
+
+// ─── Auth endpoints (public — no token required) ──────────────
+
+// POST /api/auth/login — authenticate and return JWT token
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+
+  const db = getDB();
+  const stmt = db.prepare('SELECT id, username, password_hash, role FROM users WHERE username = ?');
+  stmt.bind([username]);
+  let user = null;
+  if (stmt.step()) user = stmt.getAsObject();
+  stmt.free();
+
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  // JWT token via jsonwebtoken
+  const token = createToken({ id: user.id, username: user.username, role: user.role });
+  res.json({ token, role: user.role, username: user.username });
+});
+
+// POST /api/auth/register — create a new user (admin only)
+app.post('/api/auth/register', requireAdminLegacy(), (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username?.trim() || !password) return res.status(400).json({ error: 'Username and password required' });
+  const userRole = (role === 'admin') ? 'admin' : 'user';
+
+  try {
+    runSQL('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', [username.trim(), hashPassword(password), userRole]);
+    save();
+    res.status(201).json({ ok: true });
+  } catch {
+    return res.status(409).json({ error: 'Username already exists' });
+  }
+});
+
+// GET /api/auth/me — verify current token
+app.get('/api/auth/me', (req, res) => {
+  const user = getUserFromHeader(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+  res.json(user);
+});
+
+// ─── Auth middleware (everything below requires a token) ──────────
+app.use(authMiddleware);
+
+// ─── User management (admin only) ────────────────────────────────
+
+function requireAdminLegacy() {
+  return (req, res, next) => {
+    const user = getUserFromHeader(req);
+    if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+    req.user = user;
+    next();
+  };
+}
+
+function getUserFromHeader(req) {
+  const header = req.headers.authorization || '';
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+  try {
+    // Try JWT first
+    const decoded = jwtVerify(match[1]);
+    if (decoded) return decoded;
+    // Fallback: base64 for backward compat during migration
+    return JSON.parse(Buffer.from(match[1], 'base64').toString('utf-8'));
+  } catch { return null; }
+}
+// Lightweight JWT verify for legacy endpoints before middleware
+const _jwtSecret = process.env.JWT_SECRET || 'ai-chat-secret-key-change-me-in-production';
+function jwtVerify(token) {
+  try { return jwt.verify(token, _jwtSecret); } catch { return null; }
+}
+
+// GET /api/users — list all users (admin)
+app.get('/api/users', requireAdminLegacy(), (_req, res) => {
+  const rows = execQuery('SELECT id, username, role, created_at FROM users ORDER BY username');
+  for (const r of rows) r.id = Number(r.id);
+  res.json(rows);
+});
+
+// PUT /api/users/:id — update user role or password (admin)
+app.put('/api/users/:id', requireAdminLegacy(), (req, res) => {
+  const uid = Number(req.params.id);
+  const { username, password, role } = req.body;
+  let clauses = [];
+  let params = [];
+
+  if (username?.trim()) { clauses.push('username = ?'); params.push(username.trim()); }
+  if (password) { clauses.push('password_hash = ?'); params.push(hashPassword(password)); }
+  if (role === 'admin' || role === 'user') { clauses.push('role = ?'); params.push(role); }
+
+  if (!clauses.length) return res.status(400).json({ error: 'Nothing to update' });
+
+  const info = runSQL(`UPDATE users SET ${clauses.join(', ')} WHERE id = ?`, [...params, uid]);
+  if (info.changes === 0) return res.status(404).json({ error: 'User not found' });
+  save();
+  res.json({ ok: true });
+});
+
+// DELETE /api/users/:id — delete user (admin, can't self-delete if last admin)
+app.delete('/api/users/:id', requireAdminLegacy(), (req, res) => {
+  const uid = Number(req.params.id);
+  // Prevent deleting the last admin
+  if (uid === req.user.userId) return res.status(400).json({ error: 'Cannot delete yourself' });
+  runSQL('DELETE FROM user_chat_assignments WHERE user_id = ?', [uid]);
+  runSQL('DELETE FROM user_character_assignments WHERE user_id = ?', [uid]);
+  runSQL('DELETE FROM user_story_assignments WHERE user_id = ?', [uid]);
+  const info = runSQL('DELETE FROM users WHERE id = ?', [uid]);
+  if (info.changes === 0) return res.status(404).json({ error: 'User not found' });
+  save();
+  res.json({ ok: true });
+});
+
+// ─── User resource assignments ──────────────────────────────────
+
+// GET /api/users/:id/assignments — get all assignments for a user (admin)
+app.get('/api/users/:id/assignments', requireAdminLegacy(), (req, res) => {
+  const uid = Number(req.params.id);
+  // Check user exists
+  const uRows = query('SELECT id FROM users WHERE id = ?', [uid]);
+  if (!uRows.length) return res.status(404).json({ error: 'User not found' });
+
+  const chats = query(`SELECT c.id, c.title FROM chats c JOIN user_chat_assignments a ON a.chat_id = c.id WHERE a.user_id = ? ORDER BY c.title`, [uid]);
+  for (const r of chats) r.id = Number(r.id);
+
+  const chars = query(`SELECT c.id, c.name FROM characters c JOIN user_character_assignments a ON a.character_id = c.id WHERE a.user_id = ? ORDER BY c.name`, [uid]);
+  for (const r of chars) r.id = Number(r.id);
+
+  const stors = query(`SELECT s.id, s.name FROM stories s JOIN user_story_assignments a ON a.story_id = s.id WHERE a.user_id = ? ORDER BY s.name`, [uid]);
+  for (const r of stors) r.id = Number(r.id);
+
+  res.json({ chats, characters: chars, stories: stors });
+});
+
+// POST /api/users/:id/assignments — add assignment to user (admin)
+app.post('/api/users/:id/assignments', requireAdminLegacy(), (req, res) => {
+  const uid = Number(req.params.id);
+  const { assign_type, entity_id } = req.body;
+  if (!assign_type || !entity_id) return res.status(400).json({ error: 'Missing assign_type or entity_id' });
+
+  let table = '';
+  let entityIdCol = '';
+  switch (assign_type) {
+    case 'chat': table = 'user_chat_assignments'; entityIdCol = 'chat_id'; break;
+    case 'character': table = 'user_character_assignments'; entityIdCol = 'character_id'; break;
+    case 'story': table = 'user_story_assignments'; entityIdCol = 'story_id'; break;
+    default: return res.status(400).json({ error: 'Invalid assign_type' });
+  }
+
+  runSQL(`INSERT OR IGNORE INTO ${table} (user_id, ${entityIdCol}) VALUES (?, ?)`, [uid, Number(entity_id)]);
+  save();
+  res.json({ ok: true });
+});
+
+// DELETE /api/users/:id/assignments — remove assignment from user (admin)
+app.delete('/api/users/:id/assignments', requireAdminLegacy(), (req, res) => {
+  const uid = Number(req.params.id);
+  const { assign_type, entity_id } = req.body;
+
+  let table = '';
+  let entityIdCol = '';
+  switch (assign_type) {
+    case 'chat': table = 'user_chat_assignments'; entityIdCol = 'chat_id'; break;
+    case 'character': table = 'user_character_assignments'; entityIdCol = 'character_id'; break;
+    case 'story': table = 'user_story_assignments'; entityIdCol = 'story_id'; break;
+    default: return res.status(400).json({ error: 'Invalid assign_type' });
+  }
+
+  runSQL(`DELETE FROM ${table} WHERE user_id = ? AND ${entityIdCol} = ?`, [uid, Number(entity_id)]);
+  save();
+  res.json({ ok: true });
+});
+
+// ─── Quick access check helpers ───────────────────────────────
+
+function userIsAdmin(userId) {
+  const db = getDB();
+  const stmt = db.prepare('SELECT role FROM users WHERE id = ?');
+  stmt.bind([userId]);
+  let isAdmin = false;
+  if (stmt.step()) isAdmin = stmt.getAsObject().role === 'admin';
+  stmt.free();
+  return isAdmin;
+}
+
+function canAccessChat(userId, chatId) {
+  if (userIsAdmin(userId)) return true;
+  const rows = query('SELECT 1 FROM user_chat_assignments WHERE user_id = ? AND chat_id = ?', [userId, Number(chatId)]);
+  return rows.length > 0;
+}
+
+// ─── Helper to get accessible resource IDs for non-admin users ──
+
+function getUserAccessibleIds(userId, assignType) {
+  // Admins see everything (return null = no filter)
+  const db = getDB();
+  const uStmt = db.prepare('SELECT role FROM users WHERE id = ?');
+  uStmt.bind([userId]);
+  let isAdmin = false;
+  if (uStmt.step()) isAdmin = uStmt.getAsObject().role === 'admin';
+  uStmt.free();
+
+  if (isAdmin) return null; // no filter — see all
+
+  let table, entityIdCol;
+  switch (assignType) {
+    case 'chat': table = 'user_chat_assignments'; entityIdCol = 'chat_id'; break;
+    case 'character': table = 'user_character_assignments'; entityIdCol = 'character_id'; break;
+    case 'story': table = 'user_story_assignments'; entityIdCol = 'story_id'; break;
+    default: return null;
+  }
+
+  const rows = query(`SELECT ${entityIdCol} FROM ${table} WHERE user_id = ?`, [userId]);
+  if (!rows.length) return []; // no access to anything
+  return rows.map(r => r[entityIdCol]);
 }
 
 // ─── Settings ──────────────────────────────────────────────────────────
@@ -130,8 +372,19 @@ app.get('/api/models', async (_req, res) => {
 
 // ─── Chats list ────────────────────────────────────────────────────────
 
-app.get('/api/chats', (_req, res) => {
-  const chats = execQuery('SELECT id, title, created_at, updated_at FROM chats ORDER BY updated_at DESC');
+app.get('/api/chats', (req, res) => {
+  const accessibleIds = getUserAccessibleIds(req.user.userId, 'chat');
+  let sql = 'SELECT id, title, created_at, updated_at FROM chats';
+  if (accessibleIds && accessibleIds.length > 0) {
+    const placeholders = accessibleIds.map(() => '?').join(',');
+    sql += ` WHERE id IN (${placeholders})`;
+  } else if (!Array.isArray(accessibleIds)) {
+    // admin: accessibleIds is null — see all (no filter)
+  } else {
+    return res.json([]); // no access to any chats
+  }
+  sql += ' ORDER BY updated_at DESC';
+  const chats = accessibleIds && accessibleIds.length > 0 ? query(sql, accessibleIds) : execQuery(sql);
   for (const chat of chats) chat.id = Number(chat.id);
   res.json(chats);
 });
@@ -147,8 +400,10 @@ app.post('/api/chats', (req, res) => {
 // ─── Delete chat ───────────────────────────────────────────────────────
 
 app.delete('/api/chats/:id', (req, res) => {
-  runSQL('DELETE FROM messages WHERE chat_id = ?', [Number(req.params.id)]);
-  const info = runSQL('DELETE FROM chats WHERE id = ?', [Number(req.params.id)]);
+  const chatId = Number(req.params.id);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
+  runSQL('DELETE FROM messages WHERE chat_id = ?', [chatId]);
+  const info = runSQL('DELETE FROM chats WHERE id = ?', [chatId]);
   if (info.changes === 0) return res.status(404).json({ error: 'Chat not found' });
   save();
   res.json({ ok: true });
@@ -157,11 +412,130 @@ app.delete('/api/chats/:id', (req, res) => {
 // ─── Rename chat ───────────────────────────────────────────────────────
 
 app.put('/api/chats/:id', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
   const info = runSQL(
     'UPDATE chats SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [req.body.title || 'New Chat', Number(req.params.id)]
+    [req.body.title || 'New Chat', chatId]
   );
   if (info.changes === 0) return res.status(404).json({ error: 'Chat not found' });
+  save();
+  res.json({ ok: true });
+});
+
+// ─── Characters CRUD ──────────────────────────────────────────────────
+
+app.get('/api/characters', (req, res) => {
+  const accessibleIds = getUserAccessibleIds(req.user.userId, 'character');
+  let sql = 'SELECT id, name, prompt, created_at FROM characters';
+  if (accessibleIds && accessibleIds.length > 0) {
+    const placeholders = accessibleIds.map(() => '?').join(',');
+    sql += ` WHERE id IN (${placeholders})`;
+  } else if (!Array.isArray(accessibleIds)) {
+    // admin: accessibleIds is null — see all (no filter)
+  } else {
+    return res.json([]); // no access to any characters
+  }
+  sql += ' ORDER BY name ASC';
+  const rows = accessibleIds && accessibleIds.length > 0 ? query(sql, accessibleIds) : execQuery(sql);
+  for (const r of rows) r.id = Number(r.id);
+  res.json(rows);
+});
+
+app.post('/api/characters', (req, res) => {
+  const { name, prompt } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+  const result = runSQL('INSERT INTO characters (name, prompt) VALUES (?, ?)', [name.trim(), prompt || '']);
+  res.status(201).json({ id: Number(result.lastInsertRowid) });
+});
+
+app.put('/api/characters/:id', (req, res) => {
+  const { name, prompt } = req.body;
+  const info = runSQL('UPDATE characters SET name = ?, prompt = ? WHERE id = ?', [name?.trim() || '', prompt ?? '', Number(req.params.id)]);
+  if (info.changes === 0) return res.status(404).json({ error: 'Character not found' });
+  save();
+  res.json({ ok: true });
+});
+
+app.delete('/api/characters/:id', (req, res) => {
+  // Remove any assignments to this character first
+  runSQL('DELETE FROM chat_assignments WHERE assign_type = \'character\' AND entity_id = ?', [Number(req.params.id)]);
+  const info = runSQL('DELETE FROM characters WHERE id = ?', [Number(req.params.id)]);
+  if (info.changes === 0) return res.status(404).json({ error: 'Character not found' });
+  save();
+  res.json({ ok: true });
+});
+
+// ─── Stories CRUD ──────────────────────────────────────────────────────
+
+app.get('/api/stories', (req, res) => {
+  const accessibleIds = getUserAccessibleIds(req.user.userId, 'story');
+  let sql = 'SELECT id, name, prompt, created_at FROM stories';
+  if (accessibleIds && accessibleIds.length > 0) {
+    const placeholders = accessibleIds.map(() => '?').join(',');
+    sql += ` WHERE id IN (${placeholders})`;
+  } else if (!Array.isArray(accessibleIds)) {
+    // admin: accessibleIds is null — see all (no filter)
+  } else {
+    return res.json([]); // no access to any stories
+  }
+  sql += ' ORDER BY name ASC';
+  const rows = accessibleIds && accessibleIds.length > 0 ? query(sql, accessibleIds) : execQuery(sql);
+  for (const r of rows) r.id = Number(r.id);
+  res.json(rows);
+});
+
+app.post('/api/stories', (req, res) => {
+  const { name, prompt } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+  const result = runSQL('INSERT INTO stories (name, prompt) VALUES (?, ?)', [name.trim(), prompt || '']);
+  res.status(201).json({ id: Number(result.lastInsertRowid) });
+});
+
+app.put('/api/stories/:id', (req, res) => {
+  const { name, prompt } = req.body;
+  const info = runSQL('UPDATE stories SET name = ?, prompt = ? WHERE id = ?', [name?.trim() || '', prompt ?? '', Number(req.params.id)]);
+  if (info.changes === 0) return res.status(404).json({ error: 'Story not found' });
+  save();
+  res.json({ ok: true });
+});
+
+app.delete('/api/stories/:id', (req, res) => {
+  runSQL('DELETE FROM chat_assignments WHERE assign_type = \'story\' AND entity_id = ?', [Number(req.params.id)]);
+  const info = runSQL('DELETE FROM stories WHERE id = ?', [Number(req.params.id)]);
+  if (info.changes === 0) return res.status(404).json({ error: 'Story not found' });
+  save();
+  res.json({ ok: true });
+});
+
+// ─── Chat Assignments ──────────────────────────────────────────────────
+
+app.get('/api/chats/:id/assignments', (req, res) => {
+  const chatId = Number(req.params.id);
+  // Get assigned characters
+  const charRows = query(`SELECT c.id, c.name FROM characters c JOIN chat_assignments a ON a.entity_id = c.id WHERE a.chat_id = ? AND a.assign_type = 'character' ORDER BY c.name`, [chatId]);
+  for (const r of charRows) r.id = Number(r.id);
+  // Get assigned stories
+  const storyRows = query(`SELECT s.id, s.name FROM stories s JOIN chat_assignments a ON a.entity_id = s.id WHERE a.chat_id = ? AND a.assign_type = 'story' ORDER BY s.name`, [chatId]);
+  for (const r of storyRows) r.id = Number(r.id);
+  res.json({ characters: charRows, stories: storyRows });
+});
+
+app.post('/api/chats/:id/assignments', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
+  const { assign_type, entity_id } = req.body;
+  if (!assign_type || !entity_id) return res.status(400).json({ error: 'Missing assign_type or entity_id' });
+  runSQL('INSERT OR IGNORE INTO chat_assignments (chat_id, assign_type, entity_id) VALUES (?, ?, ?)', [chatId, assign_type, Number(entity_id)]);
+  save();
+  res.json({ ok: true });
+});
+
+app.delete('/api/chats/:id/assignments', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
+  const { assign_type, entity_id } = req.body;
+  runSQL('DELETE FROM chat_assignments WHERE chat_id = ? AND assign_type = ? AND entity_id = ?', [chatId, assign_type, Number(entity_id)]);
   save();
   res.json({ ok: true });
 });
@@ -169,7 +543,9 @@ app.put('/api/chats/:id', (req, res) => {
 // ─── Messages ──────────────────────────────────────────────────────────
 
 app.get('/api/chats/:id/messages', (req, res) => {
-  const messages = execQuery(`SELECT id, role, content, created_at FROM messages WHERE chat_id = ${Number(req.params.id)} ORDER BY created_at ASC`);
+  const chatId = Number(req.params.id);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access to this chat' });
+  const messages = execQuery(`SELECT id, role, content, created_at FROM messages WHERE chat_id = ${chatId} ORDER BY created_at ASC`);
   for (const msg of messages) msg.id = Number(msg.id);
   res.json(messages);
 });
@@ -178,6 +554,7 @@ app.get('/api/chats/:id/messages', (req, res) => {
 
 app.delete('/api/chats/:chatId/messages/after/:msgId', (req, res) => {
   const chatId = Number(req.params.chatId);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
   const msgId = Number(req.params.msgId);
 
   // Delete all messages with id > the given msgId in this chat
@@ -190,6 +567,7 @@ app.delete('/api/chats/:chatId/messages/after/:msgId', (req, res) => {
 
 app.post('/api/chats/:id/messages', async (req, res) => {
   const chatId = Number(req.params.id);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
   const { content } = req.body;
 
   if (!content || !content.trim()) {
@@ -221,19 +599,31 @@ app.post('/api/chats/:id/messages', async (req, res) => {
       throw new Error('No API key configured. Please set your API key in Settings.');
     }
 
-    // Build full context: system prompt + all messages (memory)
+    // Build full context: assigned characters/stories + messages
     const historyRaw = getDB().exec(`SELECT role, content FROM messages WHERE chat_id = ${chatId} ORDER BY created_at ASC`);
     const history = (historyRaw?.[0]?.values || []).map(row => ({ role: row[0], content: row[1] }));
 
     const apiMessages = [];
 
-    // Build combined system prompt: character description + story context + roleplay guidelines
+    // Build combined system prompt from assigned characters + stories + global system_prompt
     const systemParts = [];
-    if (settings.character_description?.trim()) {
-      systemParts.push(`CHARACTER DESCRIPTION:\n${settings.character_description.trim()}`);
+
+    // Load assigned characters for this chat
+    const charRows = query(`SELECT c.prompt FROM characters c JOIN chat_assignments a ON a.entity_id = c.id WHERE a.chat_id = ? AND a.assign_type = 'character' ORDER BY c.name`, [chatId]);
+    if (charRows?.length > 0) {
+      for (const row of charRows) {
+        const prompt = row.prompt;
+        if (prompt?.trim()) systemParts.push(`CHARACTER:\n${prompt.trim()}`);
+      }
     }
-    if (settings.story?.trim()) {
-      systemParts.push(`STORY CONTEXT:\n${settings.story.trim()}`);
+
+    // Load assigned stories for this chat
+    const storyRows = query(`SELECT s.prompt FROM stories s JOIN chat_assignments a ON a.entity_id = s.id WHERE a.chat_id = ? AND a.assign_type = 'story' ORDER BY s.name`, [chatId]);
+    if (storyRows?.length > 0) {
+      for (const row of storyRows) {
+        const prompt = row.prompt;
+        if (prompt?.trim()) systemParts.push(`STORY CONTEXT:\n${prompt.trim()}`);
+      }
     }
     if (settings.system_prompt?.trim()) {
       systemParts.push(settings.system_prompt.trim());

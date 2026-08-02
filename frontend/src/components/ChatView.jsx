@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
-import { fetchMessages, sendMessageStream, rewindMessages, renameChat, fetchSettings as apiFetchSettings, speakWithEdgeTts } from '../api';
+import { fetchMessages, sendMessageStream, rewindMessages, renameChat, fetchSettings as apiFetchSettings, speakWithEdgeTts, fetchChatAssignments } from '../api';
+import AssignmentsPanel from './AssignmentsPanel';
 
-export default function ChatView({ chatId, onRefresh, settingsDirty }) {
+export default function ChatView({ chatId, title: initialTitle, onRefresh, settingsDirty }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [title, setTitle] = useState('New Chat');
   const [editingTitle, setEditingTitle] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
   const [promptModal, setPromptModal] = useState(null); // { prompt: [...messages], title }
+  const [showAssignments, setShowAssignments] = useState(false);
+  const [assignmentCount, setAssignmentCount] = useState(0);
   const [settings, setSettings] = useState({}); // local settings for voice
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
@@ -40,7 +43,15 @@ export default function ChatView({ chatId, onRefresh, settingsDirty }) {
   useEffect(() => {
     loadMessages();
     loadSettings();
+    loadAssignments();
   }, [chatId]);
+
+  const loadAssignments = async () => {
+    try {
+      const data = await fetchChatAssignments(chatId);
+      setAssignmentCount((data?.characters?.length || 0) + (data?.stories?.length || 0));
+    } catch { /* ignore */ }
+  };
 
   // eslint-disable-next-line no-unused-vars
   useEffect(() => {
@@ -60,7 +71,7 @@ export default function ChatView({ chatId, onRefresh, settingsDirty }) {
       setMessages(data);
       if (data.length > 0) {
         const firstUser = data.find(m => m.role === 'user');
-        if (firstUser) setTitle(firstUser.content.slice(0, 50));
+        // title is now passed as prop from App.jsx; no local setTitle needed
       }
     } catch { /* ignore */ }
   };
@@ -156,8 +167,10 @@ export default function ChatView({ chatId, onRefresh, settingsDirty }) {
 
   const saveTitle = async () => {
     setEditingTitle(false);
-    await renameChat(chatId, title);
-    onRefresh();
+    if (editTitle.trim()) {
+      await renameChat(chatId, editTitle.trim());
+      onRefresh();
+    }
   };
 
   // Rewind — delete all messages after the given message ID
@@ -170,20 +183,38 @@ export default function ChatView({ chatId, onRefresh, settingsDirty }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       {/* Header with editable title */}
-      <div className="chat-header" style={{ flexShrink: 0 }}>
+      <div className="chat-header" style={{ flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         {editingTitle ? (
           <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
             onBlur={saveTitle}
             onKeyDown={(e) => e.key === 'Enter' && saveTitle()}
             autoFocus
           />
         ) : (
-          <span onDoubleClick={() => setEditingTitle(true)} style={{ cursor: 'pointer' }}>
-            <i className="fas fa-comment-dots"></i> {title}
+          <span onDoubleClick={() => { setEditingTitle(true); setEditTitle(initialTitle); }} style={{ cursor: 'pointer', flex: 1, minWidth: 0 }}>
+            <i className="fas fa-comment-dots"></i> {initialTitle}
           </span>
         )}
+        <button
+          onClick={() => setShowAssignments(true)}
+          title="Asignar personajes e historias"
+          style={{
+            background: assignmentCount > 0 ? 'var(--accent-glow)' : 'transparent',
+            border: 'none', color: assignmentCount > 0 ? 'var(--accent)' : 'var(--text-muted)',
+            cursor: 'pointer', padding: '6px 10px', borderRadius: '8px', fontSize: '14px', position: 'relative', flexShrink: 0, marginLeft: '8px'
+          }}
+        >
+          <i className="fas fa-link"></i>
+          {assignmentCount > 0 && (
+            <span style={{
+              position: 'absolute', top: '-4px', right: '-6px',
+              background: 'var(--accent)', color: '#fff', fontSize: '10px', fontWeight: 700,
+              borderRadius: '50%', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>{assignmentCount}</span>
+          )}
+        </button>
       </div>
 
       {/* Messages */}
@@ -218,6 +249,14 @@ export default function ChatView({ chatId, onRefresh, settingsDirty }) {
       {promptModal && promptModal.prompt && (
         <PromptModal prompt={promptModal.prompt} onClose={() => setPromptModal(null)} />
       )}
+
+      {/* Assignments Panel */}
+      {showAssignments && (
+        <AssignmentsPanel chatId={chatId} onClose={() => {
+          setShowAssignments(false);
+          loadAssignments(); // refresh count after changes
+        }} />
+      )}
     </div>
   );
 }
@@ -227,22 +266,11 @@ function isLastAssistant(msg, messages) {
 }
 
 // Reconstruct the full API prompt for a given assistant message.
-// Uses settings (character_description + story + system_prompt) and conversation history up to that message.
+// Note: The real system prompt (with assigned characters/stories) is sent by the backend
+// and stored in msg.prompt. This function only reconstructs from local settings as fallback.
 function buildPrompt(allMessages, msgIndex, settings) {
-  const parts = [];
-  if (settings.character_description?.trim()) {
-    parts.push({ role: 'system', content: `CHARACTER DESCRIPTION:\n${settings.character_description.trim()}` });
-  }
-  if (settings.story?.trim()) {
-    parts.push({ role: 'system', content: `STORY CONTEXT:\n${settings.story.trim()}` });
-  }
   if (settings.system_prompt?.trim()) {
-    parts.push({ role: 'system', content: settings.system_prompt.trim() });
-  }
-  // Merge multiple system parts into one
-  const sys = parts.filter(p => p.role === 'system').map(p => p.content).join('\n\n');
-  if (sys) {
-    return [{ role: 'system', content: sys }, ...allMessages.slice(0, msgIndex)];
+    return [{ role: 'system', content: settings.system_prompt.trim() }, ...allMessages.slice(0, msgIndex)];
   }
   return allMessages.slice(0, msgIndex);
 }
@@ -260,7 +288,12 @@ function MessageBubble({ msg, allMessages, streaming, settings, speak, onShowPro
 
   return (
     <div className={`message-bubble ${msg.role}`}>
-      {!isUser && <div className="message-role-label">AI{streaming ? ' <i className="fas fa-spinner fa-spin"></i>' : ''}</div>}
+      {!isUser && (
+        <div className="message-role-label">
+          AI
+          {streaming && <DotsLoader />}
+        </div>
+      )}
       {/* Collapsible thinking section */}
       {hasThinking && (
         <div style={{ marginBottom: '8px' }}>
@@ -303,36 +336,25 @@ function MessageBubble({ msg, allMessages, streaming, settings, speak, onShowPro
       {msg.content ? (
         <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
       ) : (streaming ? (
-        <span style={{ opacity: 0.5 }}>Pensando...</span>
+        <DotsLoader />
       ) : null)}
 
       {/* Action bar — unified buttons at the bottom */}
-      {!streaming && msg.content && idx >= 0 && ((hasPrompt) || (idx < allMessages.length - 1)) && (
+      {!streaming && msg.content && idx >= 0 && !isUser && ((hasPrompt) || (idx < allMessages.length - 1)) && (
         <div className="message-actions">
-          {isUser ? (
-            /* User message: only rewind */
-            idx < allMessages.length - 1 && (
-              <button onClick={() => onRewind?.(msg.id)} title="Rebobinar — borrar mensajes posteriores">
-                <i className="fas fa-backward-step"></i> Rebobinar
-              </button>
-            )
-          ) : (
-            /* AI message: speak, prompt viewer, rewind */
-            <>
-              <button onClick={() => speak(msg.content, settings.voice || '')} title="Reproducir audio">
-                <i className="fas fa-volume-high"></i> Reproducir
-              </button>
-              {hasPrompt && (
-                <button onClick={() => onShowPrompt?.(displayPrompt)} title="Ver el prompt enviado a la API">
-                  <i className="fas fa-code"></i> Ver prompt
-                </button>
-              )}
-              {idx < allMessages.length - 1 && (
-                <button onClick={() => onRewind?.(msg.id)} title="Rebobinar — borrar mensajes posteriores">
-                  <i className="fas fa-backward-step"></i> Rebobinar
-                </button>
-              )}
-            </>
+          {/* AI message: speak, prompt viewer, rewind */}
+          <button onClick={() => speak(msg.content, settings.voice || '')} title="Reproducir audio">
+            <i className="fas fa-volume-high"></i> Reproducir
+          </button>
+          {hasPrompt && (
+            <button onClick={() => onShowPrompt?.(displayPrompt)} title="Ver el prompt enviado a la API">
+              <i className="fas fa-code"></i> Ver prompt
+            </button>
+          )}
+          {idx < allMessages.length - 1 && (
+            <button onClick={() => onRewind?.(msg.id)} title="Rebobinar — borrar mensajes posteriores">
+              <i className="fas fa-backward-step"></i> Rebobinar
+            </button>
           )}
         </div>
       )}
@@ -370,5 +392,16 @@ function PromptModal({ prompt, onClose }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Animated dots loading indicator (reuses .typing-indicator CSS) ──
+function DotsLoader() {
+  return (
+    <span className="typing-indicator" style={{ padding: '0', gap: '5px', marginLeft: '6px' }}>
+      <span className="typing-dot" />
+      <span className="typing-dot" />
+      <span className="typing-dot" />
+    </span>
   );
 }
