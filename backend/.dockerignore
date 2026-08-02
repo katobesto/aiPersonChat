@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+*.md
+.env
+.vscode
+data/*.db-journal
+.DS_Store

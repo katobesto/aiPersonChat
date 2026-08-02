@@ -20,3 +20,7 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Docker — exclude local DB from git (production uses named volume)
+backend/data/*.db
+backend/data/*.db-journal

@@ -947,6 +947,11 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
   });
 }
 
+// ─── Health check endpoint (for Docker/Coolify) ──────────────────────
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
+
 // ─── Start server ──────────────────────────────────────────────────────
 
 initDB().then(() => {
