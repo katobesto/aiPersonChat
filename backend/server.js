@@ -121,6 +121,11 @@ app.get('/api/auth/me', (req, res) => {
   res.json(user);
 });
 
+// ─── Health check endpoint (public — for Docker/Coolify) ─────────
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
+
 // ─── Auth middleware (everything below requires a token) ──────────
 app.use(authMiddleware);
 
@@ -958,11 +963,6 @@ if (fs.existsSync(path.join(staticDir, 'index.html'))) {
   // SPA fallback — any non-API route serves index.html
   app.get('/', (_req, res) => { res.sendFile(path.join(staticDir, 'index.html')); });
 }
-
-// ─── Health check endpoint (for Docker/Coolify) ──────────────────────
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
-});
 
 // ─── Start server ──────────────────────────────────────────────────────
 
