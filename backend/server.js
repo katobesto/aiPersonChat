@@ -126,6 +126,24 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
 
+// ─── Serve frontend static files (production) + SPA fallback ────────
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const staticDir = path.join(__dirname, '..', 'dist');
+console.log(`[server] Checking for frontend at: ${staticDir}`);
+if (fs.existsSync(path.join(staticDir, 'index.html'))) {
+  console.log('[server] Frontend found — serving static files + SPA fallback');
+  app.use(express.static(staticDir));
+  // SPA fallback — any non-API route serves index.html
+  app.get('*', (_req, res, next) => {
+    if (!_req.originalUrl.startsWith('/api/')) {
+      return res.sendFile(path.join(staticDir, 'index.html'));
+    }
+    next();
+  });
+} else {
+  console.log('[server] WARNING: No frontend found at ' + staticDir + ', serving API only');
+}
+
 // ─── Auth middleware (everything below requires a token) ──────────
 app.use(authMiddleware);
 
@@ -953,24 +971,6 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
     req.write(data);
     req.end();
   });
-}
-
-// ─── Serve frontend static files (production) + SPA fallback ────────
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const staticDir = path.join(__dirname, '..', 'dist');
-console.log(`[server] Checking for frontend at: ${staticDir}`);
-if (fs.existsSync(path.join(staticDir, 'index.html'))) {
-  console.log('[server] Frontend found — serving static files + SPA fallback');
-  app.use(express.static(staticDir));
-  // SPA fallback — any non-API route serves index.html
-  app.get('*', (_req, res, next) => {
-    if (!_req.originalUrl.startsWith('/api/')) {
-      return res.sendFile(path.join(staticDir, 'index.html'));
-    }
-    next();
-  });
-} else {
-  console.log('[server] WARNING: No frontend found at ' + staticDir + ', serving API only');
 }
 
 // ─── Start server ──────────────────────────────────────────────────────
