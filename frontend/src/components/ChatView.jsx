@@ -377,31 +377,197 @@ function MessageBubble({ msg, allMessages, streaming, settings, speak, onShowPro
   );
 }
 
+// ─── Prompt section parsing (turns the tagged system prompt into a tree) ──
+const SECTION_LABELS = {
+  ROLEPLAY_ENGINE: { label: 'Reglas del motor (invariables)', icon: 'fa-shield-halved' },
+  PROJECT_RULES: { label: 'Reglas del proyecto', icon: 'fa-sliders' },
+  STORY_CANON: { label: 'Canon de la historia', icon: 'fa-book-open' },
+  CHARACTERS: { label: 'Personajes', icon: 'fa-users' },
+  CHARACTER_PROFILE: { label: 'Personaje', icon: 'fa-user' },
+  SCENE_STATE: { label: 'Estado de la escena', icon: 'fa-clapperboard' },
+  RELATIONSHIP_STATE: { label: 'Estado de la relación', icon: 'fa-heart-pulse' },
+  PRIVATE_CONTEXT: { label: 'Contexto privado / omnisciente', icon: 'fa-eye-slash' },
+  RECENT_PATTERNS_TO_AVOID: { label: 'Patrones recientes a evitar', icon: 'fa-rotate' },
+  REPEATED_USER_MESSAGE_NOTE: { label: 'Nota: mensaje repetido', icon: 'fa-arrows-rotate' },
+  NARRATIVE_STYLE: { label: 'Estilo narrativo', icon: 'fa-pen-nib' },
+};
+
+// Extracts top-level <TAG attr="...">content</TAG> blocks from a string.
+// Not a general XML parser — matches this app's known, non-nested tag set.
+function parseTaggedBlocks(text) {
+  const blocks = [];
+  const re = /<([A-Za-z_]+)((?:\s+[a-zA-Z]+="[^"]*")*)>([\s\S]*?)<\/\1>/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const [, tag, attrString, content] = m;
+    const attrs = {};
+    const attrRe = /([a-zA-Z]+)="([^"]*)"/g;
+    let am;
+    while ((am = attrRe.exec(attrString)) !== null) attrs[am[1]] = am[2];
+    blocks.push({ tag, attrs, content: content.trim() });
+  }
+  return blocks;
+}
+
+function parseSystemPromptSections(systemContent) {
+  if (!systemContent?.trim()) return [];
+  const topLevel = parseTaggedBlocks(systemContent);
+  if (topLevel.length === 0) {
+    // Not our tagged format (e.g. reconstructed fallback) — show as-is.
+    return [{ tag: 'RAW', attrs: {}, content: systemContent, children: [] }];
+  }
+  return topLevel.map((block) => {
+    if (block.tag === 'CHARACTERS') {
+      return { ...block, children: parseTaggedBlocks(block.content) };
+    }
+    return { ...block, children: [] };
+  });
+}
+
+function sectionMeta(tag, attrs) {
+  const known = SECTION_LABELS[tag];
+  if (known) {
+    const suffix = tag === 'CHARACTER_PROFILE' && attrs.name ? `: ${attrs.name}` : '';
+    return { label: known.label + suffix, icon: known.icon };
+  }
+  return { label: tag, icon: 'fa-tag' };
+}
+
+// ─── Accordion primitives ─────────────────────────────────────────────
+function AccordionSection({ tag, attrs, content, childBlocks, depth = 0, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const { label, icon } = sectionMeta(tag, attrs);
+  const hasChildren = childBlocks && childBlocks.length > 0;
+
+  return (
+    <div style={{ marginLeft: depth ? '16px' : 0, marginBottom: '8px' }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+          background: 'var(--glass-bg)', border: '1px solid var(--border)', borderRadius: '10px',
+          padding: '10px 14px', cursor: 'pointer', color: 'var(--text-primary)', fontSize: '13.5px', fontWeight: 600,
+          textAlign: 'left',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <i className={`fas ${icon}`} style={{ color: 'var(--accent)', width: '14px' }}></i>
+          {label}
+        </span>
+        <i className={`fas ${open ? 'fa-chevron-up' : 'fa-chevron-down'}`} style={{ fontSize: '11px', color: 'var(--text-muted)' }}></i>
+      </button>
+      {open && (
+        <div style={{ padding: hasChildren ? '8px 0 0 0' : '10px 14px', }}>
+          {content?.trim() && (
+            <pre
+              style={{
+                background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '10px',
+                padding: '12px 14px', fontSize: '12.5px', lineHeight: '1.6', color: 'var(--text-secondary)',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0,
+              }}
+            >
+              {content}
+            </pre>
+          )}
+          {hasChildren && childBlocks.map((child, i) => (
+            <AccordionSection key={i} tag={child.tag} attrs={child.attrs} content={child.content} childBlocks={child.children} depth={depth + 1} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConversationEntry({ role, content }) {
+  const isUser = role === 'user';
+  return (
+    <div
+      style={{
+        background: isUser ? 'var(--accent-glow)' : 'var(--bg-primary)',
+        border: '1px solid var(--border)', borderRadius: '10px', padding: '10px 14px', marginBottom: '8px',
+      }}
+    >
+      <div style={{ fontSize: '10.5px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: isUser ? 'var(--accent)' : 'var(--text-muted)', marginBottom: '4px' }}>
+        {isUser ? 'Usuario' : 'Asistente'}
+      </div>
+      <div style={{ fontSize: '13px', lineHeight: '1.6', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        {content}
+      </div>
+    </div>
+  );
+}
+
 // ─── Prompt Viewer Modal ──────────────────────────────────────────────
 function PromptModal({ prompt, onClose }) {
-  const json = JSON.stringify(prompt, null, 2);
+  const [showRaw, setShowRaw] = useState(false);
+
+  const systemMsg = prompt.find((m) => m.role === 'system');
+  const nonSystem = prompt.filter((m) => m.role !== 'system');
+  const currentMessage = nonSystem[nonSystem.length - 1] || null;
+  const history = nonSystem.slice(0, -1);
+  const sections = parseSystemPromptSections(systemMsg?.content);
 
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ width: '700px', maxWidth: '95vw' }}>
-        <h2><i className="fas fa-code"></i> Prompt enviado a la API</h2>
-        <pre
-          style={{
-            background: 'var(--bg-primary)',
-            border: '1px solid var(--border)',
-            borderRadius: '12px',
-            padding: '16px',
-            fontSize: '12.5px',
-            lineHeight: '1.6',
-            color: 'var(--text-secondary)',
-            overflow: 'auto',
-            maxHeight: '60vh',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {json}
-        </pre>
+      <div className="modal" style={{ width: '720px', maxWidth: '95vw' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+          <h2 style={{ margin: 0 }}><i className="fas fa-code"></i> Prompt enviado a la API</h2>
+          <button
+            onClick={() => setShowRaw((s) => !s)}
+            className="btn-preview-voice"
+            style={{ width: 'auto', margin: 0, padding: '8px 14px', fontSize: '12px' }}
+          >
+            <i className="fas fa-file-code"></i> {showRaw ? 'Ver estructurado' : 'Ver JSON crudo'}
+          </button>
+        </div>
+
+        <div style={{ maxHeight: '65vh', overflowY: 'auto', paddingRight: '4px' }}>
+          {showRaw ? (
+            <pre
+              style={{
+                background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '12px',
+                padding: '16px', fontSize: '12.5px', lineHeight: '1.6', color: 'var(--text-secondary)',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0,
+              }}
+            >
+              {JSON.stringify(prompt, null, 2)}
+            </pre>
+          ) : (
+            <>
+              {sections.length > 0 && (
+                <div style={{ marginBottom: '18px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+                    Mensaje de sistema
+                  </div>
+                  {sections.map((s, i) => (
+                    <AccordionSection key={i} tag={s.tag} attrs={s.attrs} content={s.content} childBlocks={s.children} />
+                  ))}
+                </div>
+              )}
+
+              {history.length > 0 && (
+                <div style={{ marginBottom: '18px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+                    Historial enviado ({history.length} mensajes)
+                  </div>
+                  {history.map((m, i) => (
+                    <ConversationEntry key={i} role={m.role} content={m.content} />
+                  ))}
+                </div>
+              )}
+
+              {currentMessage && (
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+                    Mensaje actual
+                  </div>
+                  <ConversationEntry role={currentMessage.role} content={currentMessage.content} />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         <div className="modal-actions">
           <button className="btn-cancel" onClick={onClose}>Cerrar</button>
         </div>
