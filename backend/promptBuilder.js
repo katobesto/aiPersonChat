@@ -4,6 +4,8 @@
 // relationship state, recent-pattern avoidance, narrative style, and the
 // real conversation history. See buildRoleplayMessages() for the entry point.
 
+import { formatRelationshipState } from './relationshipState.js';
+
 // ─── Invariable core rules of the roleplay engine ───────────────────────
 // This block never changes per-request. It always sits first inside the
 // compiled system prompt, and only yields to an explicit user instruction
@@ -38,21 +40,6 @@ CONTINUIDAD Y LONGITUD
 - Clasifica mentalmente el turno como conversación directa, acción narrativa o transición de escena, y ajusta la longitud en consecuencia: de una a tres frases para diálogo directo, uno o dos párrafos breves cuando hay acción, y descripción más extensa solo en cambios de escena.
 - El estilo descrito en NARRATIVE_STYLE es una preferencia de presentación, no una obligación que deba cumplirse en todos los turnos, y nunca puede anular estas reglas centrales, los límites del personaje ni una instrucción explícita de brevedad del usuario.`;
 
-// Default relationship state used when the chat has no tracked relationship
-// data yet. There is currently no persistent affinity/relationship system in
-// this project (see project memory) — this is a static reminder to progress
-// gradually, not a mechanic that updates automatically turn to turn.
-const DEFAULT_RELATIONSHIP_STATE = `Etapa: desconocidos o conocidos recientes
-Confianza: 10/100
-Atracción: 0/100
-Comodidad: 15/100
-Tensión: 0/100
-Impresión actual: todavía no formada
-Dudas actuales: no conoce suficientemente al usuario
-Límites actuales: prudencia normal entre desconocidos
-
-Estas cifras son orientativas, no mecánicas: no las incrementes automáticamente solo porque el usuario haga un cumplido, revele una vulnerabilidad o comparta una afición.`;
-
 function wrap(tag, content, attrs = '') {
   const body = (content ?? '').toString().trim();
   if (!body) return '';
@@ -79,8 +66,7 @@ export function buildSceneStateSection(context) {
 }
 
 export function buildRelationshipStateSection(context) {
-  const custom = context?.relationshipState?.trim();
-  return wrap('RELATIONSHIP_STATE', custom || DEFAULT_RELATIONSHIP_STATE);
+  return wrap('RELATIONSHIP_STATE', formatRelationshipState(context?.relationshipState));
 }
 
 export function buildPrivateContextSection(context) {

@@ -119,6 +119,22 @@ export async function initDB() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (story_id) REFERENCES stories(id) ON DELETE CASCADE
     );
+
+    -- Persisted relationship state per chat (one row per chat, updated after
+    -- each assistant turn). See backend/relationshipState.js.
+    CREATE TABLE IF NOT EXISTS chat_relationship_state (
+      chat_id INTEGER PRIMARY KEY,
+      trust INTEGER NOT NULL DEFAULT 10,
+      attraction INTEGER NOT NULL DEFAULT 0,
+      comfort INTEGER NOT NULL DEFAULT 15,
+      tension INTEGER NOT NULL DEFAULT 0,
+      stage TEXT NOT NULL DEFAULT 'desconocidos o conocidos recientes',
+      impression TEXT NOT NULL DEFAULT 'todavía no formada',
+      doubts TEXT NOT NULL DEFAULT 'no conoce suficientemente al usuario',
+      boundaries TEXT NOT NULL DEFAULT 'prudencia normal entre desconocidos',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+    );
   `);
 
   // Insert default settings

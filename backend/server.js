@@ -10,6 +10,7 @@ import http from 'http';
 import https from 'https';
 import { EdgeTTS } from 'edge-tts-universal';
 import { buildRoleplayMessages } from './promptBuilder.js';
+import { DEFAULT_STATE, buildStateUpdateMessages, parseStateUpdate } from './relationshipState.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -681,6 +682,28 @@ app.delete('/api/chats/:chatId/messages/after/:msgId', (req, res) => {
 
 // ─── Send message to AI with streaming ─────────────────────────────────
 
+function loadRelationshipState(chatId) {
+  const rows = query('SELECT trust, attraction, comfort, tension, stage, impression, doubts, boundaries FROM chat_relationship_state WHERE chat_id = ?', [chatId]);
+  if (!rows?.length) return { ...DEFAULT_STATE };
+  const row = rows[0];
+  return {
+    trust: Number(row.trust), attraction: Number(row.attraction), comfort: Number(row.comfort), tension: Number(row.tension),
+    stage: row.stage, impression: row.impression, doubts: row.doubts, boundaries: row.boundaries,
+  };
+}
+
+function saveRelationshipState(chatId, state) {
+  runSQL(
+    `INSERT INTO chat_relationship_state (chat_id, trust, attraction, comfort, tension, stage, impression, doubts, boundaries, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(chat_id) DO UPDATE SET
+       trust = excluded.trust, attraction = excluded.attraction, comfort = excluded.comfort, tension = excluded.tension,
+       stage = excluded.stage, impression = excluded.impression, doubts = excluded.doubts, boundaries = excluded.boundaries,
+       updated_at = CURRENT_TIMESTAMP`,
+    [chatId, state.trust, state.attraction, state.comfort, state.tension, state.stage, state.impression, state.doubts, state.boundaries]
+  );
+}
+
 app.post('/api/chats/:id/messages', async (req, res) => {
   const chatId = Number(req.params.id);
   if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
@@ -726,11 +749,14 @@ app.post('/api/chats/:id/messages', async (req, res) => {
     // Load assigned stories for this chat
     const storyRows = query(`SELECT s.prompt FROM stories s JOIN chat_assignments a ON a.entity_id = s.id WHERE a.chat_id = ? AND a.assign_type = 'story' ORDER BY s.name`, [chatId]);
 
+    // Load the persisted relationship state for this chat (defaults if none yet)
+    const previousRelationshipState = loadRelationshipState(chatId);
+
     const apiMessages = buildRoleplayMessages({
       systemPrompt: settings.system_prompt,
       story: (storyRows || []).map(r => r.prompt),
       characters: charRows || [],
-      context: {},
+      context: { relationshipState: previousRelationshipState },
       narrativePrompt: settings.narrative_style,
       history,
       userMessage: content.trim(),
@@ -819,6 +845,29 @@ app.post('/api/chats/:id/messages', async (req, res) => {
     // Save assistant message (after stream ends)
     runSQL('INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)', [chatId, 'assistant', fullReply]);
     save();
+
+    // Update the persisted relationship state in the background via a small,
+    // dedicated non-streaming call — never delays the visible reply above.
+    // Any failure here just leaves the state unchanged for next turn.
+    (async () => {
+      try {
+        const characterSummary = (charRows || []).map(c => c.prompt).filter(Boolean).join('\n\n');
+        const stateMessages = buildStateUpdateMessages({
+          previousState: previousRelationshipState,
+          characterSummary,
+          userMessage: content.trim(),
+          assistantReply: fullReply,
+        });
+        const rawStateResponse = await callAI(settings.api_base, settings.api_key, settings.model, stateMessages);
+        const { state: nextRelationshipState, changed } = parseStateUpdate(rawStateResponse, previousRelationshipState);
+        saveRelationshipState(chatId, nextRelationshipState);
+        if (!changed) {
+          console.warn('[RELATIONSHIP-STATE] Analyst call did not return usable JSON; state left unchanged.');
+        }
+      } catch (err) {
+        console.error('[RELATIONSHIP-STATE] Background update failed:', err.message);
+      }
+    })();
 
   } catch (err) {
     console.error('AI call error:', err.message);
