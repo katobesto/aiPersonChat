@@ -9,6 +9,7 @@ import { authMiddleware, createToken, hashPassword, verifyPassword } from './aut
 import http from 'http';
 import https from 'https';
 import { EdgeTTS } from 'edge-tts-universal';
+import { buildRoleplayMessages } from './promptBuilder.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -714,43 +715,26 @@ app.post('/api/chats/:id/messages', async (req, res) => {
       throw new Error('No API key configured. Please set your API key in Settings.');
     }
 
-    // Build full context: assigned characters/stories + messages
-    const historyRaw = getDB().exec(`SELECT role, content FROM messages WHERE chat_id = ${chatId} ORDER BY created_at ASC`);
-    const history = (historyRaw?.[0]?.values || []).map(row => ({ role: row[0], content: row[1] }));
-
-    const apiMessages = [];
-
-    // Build combined system prompt from assigned characters + stories + global system_prompt
-    const systemParts = [];
+    // Load full history ordered by insertion, excluding the current user
+    // message we just inserted above (it is always the last row by id).
+    const historyRows = query('SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id ASC', [chatId]);
+    const history = historyRows.slice(0, -1).map(row => ({ role: row.role, content: row.content }));
 
     // Load assigned characters for this chat
-    const charRows = query(`SELECT c.prompt FROM characters c JOIN chat_assignments a ON a.entity_id = c.id WHERE a.chat_id = ? AND a.assign_type = 'character' ORDER BY c.name`, [chatId]);
-    if (charRows?.length > 0) {
-      for (const row of charRows) {
-        const prompt = row.prompt;
-        if (prompt?.trim()) systemParts.push(`CHARACTER:\n${prompt.trim()}`);
-      }
-    }
+    const charRows = query(`SELECT c.id, c.name, c.prompt FROM characters c JOIN chat_assignments a ON a.entity_id = c.id WHERE a.chat_id = ? AND a.assign_type = 'character' ORDER BY c.name`, [chatId]);
 
     // Load assigned stories for this chat
     const storyRows = query(`SELECT s.prompt FROM stories s JOIN chat_assignments a ON a.entity_id = s.id WHERE a.chat_id = ? AND a.assign_type = 'story' ORDER BY s.name`, [chatId]);
-    if (storyRows?.length > 0) {
-      for (const row of storyRows) {
-        const prompt = row.prompt;
-        if (prompt?.trim()) systemParts.push(`STORY CONTEXT:\n${prompt.trim()}`);
-      }
-    }
-    if (settings.system_prompt?.trim()) {
-      systemParts.push(settings.system_prompt.trim());
-    }
-    if (systemParts.length > 0) {
-      apiMessages.push({ role: 'system', content: systemParts.join('\n\n') });
-    }
 
-    // Full conversation history (memory)
-    for (const msg of history) {
-      apiMessages.push({ role: msg.role, content: msg.content });
-    }
+    const apiMessages = buildRoleplayMessages({
+      systemPrompt: settings.system_prompt,
+      story: (storyRows || []).map(r => r.prompt),
+      characters: charRows || [],
+      context: {},
+      narrativePrompt: settings.narrative_style,
+      history,
+      userMessage: content.trim(),
+    });
 
     // ── Streaming response to the client via SSE ────────────────────────
     res.setHeader('Content-Type', 'text/event-stream');
@@ -771,6 +755,7 @@ app.post('/api/chats/:id/messages', async (req, res) => {
     const enableThinking = settings.enable_thinking === true || settings.enable_thinking === 'true';
     const maxTokens = parseInt(settings.max_tokens) || 8192;
     const reasoningMaxTokens = parseInt(settings.reasoning_max_tokens) || 32000;
+    console.log(`[AI-STREAM] model=${settings.model}, api_base=${settings.api_base}, enable_thinking=${enableThinking}`);
     await callAISTream(settings.api_base, settings.api_key, settings.model, apiMessages, ({ type, content }) => {
       if (!content) return;
 
@@ -823,6 +808,10 @@ app.post('/api/chats/:id/messages', async (req, res) => {
       }
     }, enableThinking, maxTokens, reasoningMaxTokens);
 
+    console.log(`[AI-STREAM] Final — fullThinking length: ${fullThinking.length}, fullReply length: ${fullReply.length}`);
+    if (fullReply.length === 0) {
+      console.error('[AI-STREAM] WARNING: fullReply is empty! No content tokens were received.');
+    }
     // Send a done signal with final clean content + the prompt used
     res.write(`data: ${JSON.stringify({ done: true, content: fullReply, prompt: apiMessages })}\n\n`);
     res.end();
@@ -987,6 +976,7 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
     }
 
     const data = JSON.stringify(bodyFields);
+    console.log('[AI-STREAM] Request body:', data.slice(0, 500));
 
     const options = {
       method: 'POST',
@@ -1008,6 +998,8 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
 
       // Accumulate buffer to handle partial SSE lines
       let buffer = '';
+      let totalThinkingTokens = 0;
+      let totalContentTokens = 0;
       res.on('data', (chunk) => {
         buffer += chunk.toString();
         // Process complete SSE lines
@@ -1029,21 +1021,26 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
 
             // Qwen / DeepSeek / OpenRouter style: reasoning_content in delta
             if (delta.reasoning_content && typeof delta.reasoning_content === 'string') {
+              totalThinkingTokens++;
               onToken({ type: 'thinking', content: delta.reasoning_content });
             }
             // Anthropic/Claude style: thinking_blocks as separate field
             else if (parsed.thinking) {
+              totalThinkingTokens++;
               onToken({ type: 'thinking', content: parsed.thinking });
             } else if (delta.type === 'thinking_delta' && delta.thinking?.content) {
+              totalThinkingTokens++;
               onToken({ type: 'thinking', content: delta.thinking.content });
             }
             // OpenAI-compatible thinking_delta
             else if (parsed.choices?.[0]?.thinking_delta?.content) {
+              totalThinkingTokens++;
               onToken({ type: 'thinking', content: parsed.choices[0].thinking_delta.content });
             }
 
             // Standard content token — process independently of reasoning
             if (delta.content && typeof delta.content === 'string') {
+              totalContentTokens++;
               onToken({ type: 'content', content: delta.content });
             }
           } catch {
@@ -1052,7 +1049,10 @@ function callAISTream(apiBase, apiKey, model, messages, onToken, enableThinking 
         }
       });
 
-      res.on('end', () => resolve());
+      res.on('end', () => {
+        console.log(`[AI-STREAM] Stream ended — thinking_tokens: ${totalThinkingTokens}, content_tokens: ${totalContentTokens}`);
+        resolve();
+      });
     });
 
     req.on('error', reject);
