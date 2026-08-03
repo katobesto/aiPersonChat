@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { fetchMessages, sendMessageStream, rewindMessages, renameChat, fetchSettings as apiFetchSettings, speakWithEdgeTts, fetchChatAssignments } from '../api';
+import { fetchMessages, sendMessageStream, rewindMessages, renameChat, fetchSettings as apiFetchSettings, speakWithEdgeTts, fetchChatAssignments, exportChat } from '../api';
 import AssignmentsPanel from './AssignmentsPanel';
 
 export default function ChatView({ chatId, title: initialTitle, onRefresh, settingsDirty, toggleSidebar }) {
@@ -205,6 +205,13 @@ export default function ChatView({ chatId, title: initialTitle, onRefresh, setti
             <i className="fas fa-comment-dots"></i> {initialTitle}
           </span>
         )}
+        <button
+          onClick={async () => { try { await exportChat(chatId); } catch(e) { console.error('Export error:', e); } }}
+          title="Exportar chat"
+          style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '6px 10px', borderRadius: '8px', fontSize: '14px', flexShrink: 0 }}
+        >
+          <i className="fas fa-download"></i>
+        </button>
         <button
           onClick={() => setShowAssignments(true)}
           title="Asignar personajes e historias"

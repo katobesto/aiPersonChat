@@ -449,6 +449,95 @@ app.put('/api/chats/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Export chat (downloadable JSON) ──────────────────────────────
+
+app.get('/api/chats/:id/export', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!canAccessChat(req.user.userId, chatId)) return res.status(403).json({ error: 'No access' });
+
+  // Get chat title
+  const chatInfo = query('SELECT id, title FROM chats WHERE id = ?', [chatId]);
+  if (chatInfo.length === 0) return res.status(404).json({ error: 'Chat not found' });
+
+  // Get messages
+  const msgs = query('SELECT role, content, thinking, created_at FROM messages WHERE chat_id = ? ORDER BY id ASC', [chatId]);
+
+  // Get assignments (characters + stories)
+  const charIds = query("SELECT entity_id FROM chat_assignments WHERE chat_id = ? AND assign_type = 'character'", [chatId]);
+  const chars = [];
+  for (const { entity_id } of charIds) {
+    const row = query('SELECT name, prompt FROM characters WHERE id = ?', [entity_id]);
+    if (row.length) chars.push(row[0]);
+  }
+
+  const storyIds = query("SELECT entity_id FROM chat_assignments WHERE chat_id = ? AND assign_type = 'story'", [chatId]);
+  const stories = [];
+  for (const { entity_id } of storyIds) {
+    const row = query('SELECT name, prompt FROM stories WHERE id = ?', [entity_id]);
+    if (row.length) stories.push(row[0]);
+  }
+
+  res.json({
+    version: 1,
+    title: chatInfo[0].title,
+    messages: msgs,
+    characters: chars,
+    stories: stories,
+  });
+});
+
+// ─── Import chat (from JSON) ──────────────────────────────────────
+
+app.post('/api/chats/import', (req, res) => {
+  const { title, messages, characters, stories } = req.body;
+  if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Invalid format' });
+
+  // Create the chat
+  const chatResult = runSQL('INSERT INTO chats (title) VALUES (?)', [title || 'Imported Chat']);
+  const chatId = Number(chatResult.lastInsertRowid);
+
+  // Insert messages
+  for (const msg of messages) {
+    if (msg.role && msg.content != null) {
+      runSQL('INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)',
+        [chatId, msg.role, msg.content || '']);
+    }
+  }
+
+  // Import characters if provided and don't exist already by name
+  const charsToImport = Array.isArray(characters) ? characters : [];
+  for (const char of charsToImport) {
+    if (!char.name) continue;
+    const existing = query('SELECT id FROM characters WHERE name = ?', [char.name]);
+    let charId;
+    if (existing.length > 0) {
+      charId = Number(existing[0].id);
+    } else {
+      const r = runSQL('INSERT INTO characters (name, prompt) VALUES (?, ?)', [char.name, char.prompt || '']);
+      charId = Number(r.lastInsertRowid);
+    }
+    runSQL("INSERT OR IGNORE INTO chat_assignments (chat_id, assign_type, entity_id) VALUES (?, 'character', ?)", [chatId, charId]);
+  }
+
+  // Import stories if provided and don't exist already by name
+  const storiesToImport = Array.isArray(stories) ? stories : [];
+  for (const story of storiesToImport) {
+    if (!story.name) continue;
+    const existing = query('SELECT id FROM stories WHERE name = ?', [story.name]);
+    let storyId;
+    if (existing.length > 0) {
+      storyId = Number(existing[0].id);
+    } else {
+      const r = runSQL('INSERT INTO stories (name, prompt) VALUES (?, ?)', [story.name, story.prompt || '']);
+      storyId = Number(r.lastInsertRowid);
+    }
+    runSQL("INSERT OR IGNORE INTO chat_assignments (chat_id, assign_type, entity_id) VALUES (?, 'story', ?)", [chatId, storyId]);
+  }
+
+  save();
+  res.status(201).json({ id: chatId });
+});
+
 // ─── Characters CRUD ──────────────────────────────────────────────────
 
 app.get('/api/characters', (req, res) => {

@@ -59,6 +59,33 @@ export async function renameChat(id, title) {
   return res.json();
 }
 
+export async function exportChat(chatId) {
+  const res = await authFetch(`${BASE}/chats/${chatId}/export`);
+  if (!res.ok) throw new Error('Export failed');
+  const data = await res.json();
+  // Trigger file download
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${data.title.replace(/[^a-z0-9áéíóúñ ]/gi, '_')}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return data;
+}
+
+export async function importChat(data) {
+  const res = await authFetch(`${BASE}/chats/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error('Import failed');
+  return res.json();
+}
+
 export async function fetchMessages(chatId) {
   const res = await authFetch(`${BASE}/chats/${chatId}/messages`);
   return res.json();

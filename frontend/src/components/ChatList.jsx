@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { deleteChat, renameChat } from '../api';
+import { deleteChat, renameChat, importChat as apiImportChat } from '../api';
 
 export default function ChatList({ chats, activeChatId, onSelect, onNew, onDelete, onOpenSettings, onLogout, isOpen = true }) {
   const [contextMenu, setContextMenu] = useState(null); // { x, y, chat }
   const [editingChat, setEditingChat] = useState(null); // chat being renamed
   const [editTitle, setEditTitle] = useState('');
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     document.addEventListener('click', () => {
@@ -47,9 +48,44 @@ export default function ChatList({ chats, activeChatId, onSelect, onNew, onDelet
         <h2>AI Chat</h2>
       </div>
 
-      <div style={{ padding: '12px' }}>
+      <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <button className="btn-new-chat" onClick={onNew}>
           <i className="fas fa-plus"></i> New Chat
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json"
+          style={{ display: 'none' }}
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+              const text = await file.text();
+              const data = JSON.parse(text);
+              if (!data.messages || !Array.isArray(data.messages)) {
+                alert('Archivo no válido: debe ser un export de AI Chat');
+                return;
+              }
+              const result = await apiImportChat(data);
+              onSelect(Number(result.id)); // Select the imported chat
+            } catch (err) {
+              alert('Error al importar: ' + err.message);
+            }
+            e.target.value = ''; // Reset input
+          }}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          style={{
+            width: '100%', padding: '9px 14px', borderRadius: '12px',
+            fontSize: '13px', fontWeight: '500', cursor: 'pointer',
+            background: 'var(--glass-bg)', border: '1px solid var(--border)',
+            color: 'var(--text-secondary)', display: 'flex', alignItems: 'center',
+            justifyContent: 'center', gap: '6px'
+          }}
+        >
+          <i className="fas fa-file-import"></i> Importar
         </button>
       </div>
 
